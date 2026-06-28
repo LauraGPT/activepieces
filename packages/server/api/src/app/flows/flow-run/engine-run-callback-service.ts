@@ -1,4 +1,4 @@
-import { isNil, tryCatch } from '@activepieces/core-utils'
+import { isNil, spreadIfDefined, tryCatch } from '@activepieces/core-utils'
 import { ApEdition, ExecutioOutputFile, FileCompression, FileType, isFlowRunStateTerminal, logSerializer, RunInternalError, RunInternalErrorSource, SendFlowResponseRequest, StreamStepProgress, truncateFailedStepMessage, UpdateStepProgressRequest, UploadRunLogsRequest, WebsocketClientEvent } from '@activepieces/shared'
 import { FastifyBaseLogger } from 'fastify'
 import { websocketService } from '../../core/websockets.service'
@@ -28,6 +28,7 @@ export const engineRunCallbackService = (log: FastifyBaseLogger) => ({
 
     async uploadRunLog({ projectId, request }: UploadRunLogParams): Promise<void> {
         const internalErrorEnabled = request.internalError?.source === RunInternalErrorSource.ENGINE || system.getEdition() !== ApEdition.CLOUD
+        let persistedInternalErrorToLogs = false
         if (internalErrorEnabled && !isNil(request.internalError) && !isNil(request.logsFileId)) {
             await persistInternalErrorToLogs({
                 log,
@@ -35,13 +36,18 @@ export const engineRunCallbackService = (log: FastifyBaseLogger) => ({
                 logsFileId: request.logsFileId,
                 internalError: request.internalError,
             })
+            persistedInternalErrorToLogs = true
         }
+        // Attach logsFileId only when a file backs it: the engine's backup() (no internalError, file already
+        // uploaded) or a just-persisted internal-error file. A non-persisted internal error (Cloud worker-source)
+        // has no file, so omit it rather than dangle the flow_run.logsFileId FK.
+        const attachLogsFile = isNil(request.internalError) || persistedInternalErrorToLogs
         const logData: RunsMetadataUpsertData = {
             id: request.runId,
             projectId,
             status: request.status,
             tags: request.tags,
-            logsFileId: request.logsFileId,
+            ...spreadIfDefined('logsFileId', attachLogsFile ? request.logsFileId : undefined),
             failedStep: truncateFailedStepMessage(request.failedStep),
             startTime: request.startTime,
             finishTime: request.finishTime,
